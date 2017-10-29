@@ -28,8 +28,16 @@ exports.connId = function(conn) {
   return defaultId;
 };
 
+// Send msg to the client; assumes \r\n already present
+exports.send = function(conn, msg) {
+  if (conn && !conn.destroyed) {
+    conn.write(msg);
+  }
+};
+
+// Send error to the client; assumes \r\n must be appended
 exports.sendError = function(conn, msg) {
-  if (conn) {
+  if (conn && !conn.destroyed) {
     conn.write(`-${msg || 'error'}\r\n`);
   }
 };
