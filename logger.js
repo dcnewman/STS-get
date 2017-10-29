@@ -71,6 +71,13 @@ function log(level, msg) {
 }
 
 function logLevel(lvl) {
+  if (isNaN(lvl) && typeof(lvl) === 'string') {
+    var l = log_level_str.indexOf(lvl.toLowerCase());
+    if (l < 0) {
+      return log_level;
+    }
+    lvl = l;
+  }
   var old_level = log_level;
   if (!isNaN(lvl) && 0 <= lvl && lvl < log_level_str.length) {
     log_level = lvl;

@@ -2,6 +2,7 @@
 
 const version = '0.1';
 
+const lib = require('./lib');
 const dns = require('dns');
 const net = require('net');
 const request = require('request');
@@ -10,54 +11,37 @@ const isFQDN = require('validator/lib/isFQDN');
 const Promise = require('bluebird');
 const logger = require('./logger');
 
-logger.logLevel(logger.DEBUG);
+// production or development environment/config?
+const config = require(`./config.${process.env.NODE_ENV || 'development'}.js`);
 
-const listenPort = process.env.PORT || 9000;
-const bindAddr = process.env.BIND || '0.0.0.0';
-
-var connCounter = 0;
+// Set the logging level
+logger.logLevel(config.logLevel);
 
 // Create our TCP server
 var server = net.createServer();
+
+server.on('error', function(err) {
+  logger.log(logger.CRITICAL, `Cannot create server socket; ${err.message}`);
+  throw err;
+});
 
 // Use handleConnection() to handle accepted sockets
 server.on('connection', handleConnection);
 
 // Log that we're listening...
-server.listen(listenPort, bindAddr, function() {
+server.listen(config.listenPort, config.bindAddr, function() {
   var addrInfo = server.address();
   logger.log(logger.NOTICE, `server listening on ${addrInfo.address || '??'}:${addrInfo.port || '??'}`);
 });
 
-function sendError(conn, msg) {
-  if (conn) {
-    conn.write(`-${msg || error}\r\n`);
-  }
-}
 
-function pad(m, width) {
-  return ('00000000000' + m).slice(-(width || 2));
-}
-
-const defaultId = pad(0, 8);
-
-function connId(conn) {
-  if (typeof(conn) === 'object') {
-    return conn && conn._sts ? conn._sts.id || defaultId : defaultId;
-  }
-  else if (typeof(conn) === 'string') {
-    return conn;
-  }
-  return defaultId;
-}
-
+// handleConnection is our primary routine for handling an inbound client connection
 function handleConnection(conn) {
 
   var addrInfo = conn.address();
-  var id = pad(connCounter, 8);
+  var id = lib.nextId();
   conn._sts = { id: id };
-  connCounter += 1;
-  logger.log(logger.INFO, `${connId(conn)}: New connection from ${addrInfo.address || '??'}:${addrInfo.port || '??'}`);
+  logger.log(logger.INFO, `${lib.connId(conn)}: New connection from ${addrInfo.address || '??'}:${addrInfo.port || '??'}`);
 
   conn.on('data', onConnData);
   conn.once('close', onConnClose);
@@ -77,19 +61,19 @@ function handleConnection(conn) {
       case 'STS':
         if (tokens.length < 2) {
           logger.log(logger.DEBUG, function() {
-            return `${connId(conn)}: STS command with no domain name`;
+            return `${lib.connId(conn)}: STS command with no domain name`;
           });
-          sendError(conn, 'MISSING DOMAIN NAME');
+          lib.sendError(conn, 'MISSING DOMAIN NAME');
         }
         else if (!isFQDN(tokens[1], {require_tld: true, allow_underscores: false, allow_trailing_dot: false})) {
           logger.log(logger.DEBUG, function() {
-            return `${connId(conn)}: STS command with invalid domain name`;
+            return `${lib.connId(conn)}: STS command with invalid domain name`;
           });
-          sendError(conn, 'INVALID DOMAIN NAME');
+          lib.sendError(conn, 'INVALID DOMAIN NAME');
         }
         else {
           logger.log(logger.DEBUG, function() {
-            return `${connId(conn)}: STS ${tokens[1]}`;
+            return `${lib.connId(conn)}: STS ${tokens[1]}`;
           });
           var opts = new Object();
           opts.conn = conn;
@@ -106,37 +90,46 @@ function handleConnection(conn) {
             })
             .catch(function(err) {
               logger.log(logger.DEBUG, function() {
-                return `${connId(conn)}: STS command failed; err = ${err.message}`;
+                return `${lib.connId(conn)}: STS command failed; err = ${err.message}`;
               });
               // Ensure that the connection wasn't closed by a QUIT
               // command received whilst we were waiting on DNS and HTTP requests
               if (!conn.destroyed) {
-                sendError(conn, err.message);
+                lib.sendError(conn, err.message);
               }
             });
         }
         break;
 
       case 'QUIT':
+        logger.log(logger.INFO, `${lib.connId(conn)}: QUIT received; closing connection`);
         conn.end('+BYE\r\n');
         break;
 
       case 'VERSION':
+        logger.log(logger.DEBUG, function() {
+          return `${lib.connId(conn)}: VERSION received; sending version number ${version}`;
+        });
         conn.write(version + '\r\n');
         break;
 
-      default: break;
+      default:
+        logger.log(logger.DEBUG, function() {
+          // Only log the first 10 chars of the command
+          return `${lib.connId(conn)}: Unrecognized command received; ${cmd.substr(0, 10)}`;
+        });
+        break;
     }
   }
 
   function onConnClose(d) {
     // conn is no longer valid
-    logger.log(logger.INFO, `${connId(id)}: Connection closed`);
+    logger.log(logger.INFO, `${lib.connId(id)}: Connection closed`);
   }
 
   function onConnError(err) {
     // ERR passed?
-    logger.log(logger.WARNING, `${connId(conn)}: Connection error; closing connection`);
+    logger.log(logger.WARNING, `${lib.connId(conn)}: Connection error; closing connection`);
     if (!conn.destroyed) {
       conn.end('+BYE\r\n');
     }
@@ -154,7 +147,7 @@ function getTxt(opts) {
   // Sanity checks
   if (_.isEmpty(opts) || _.isEmpty(opts.host)) {
     logger.log(logger.WARNING, function() {
-      return `${connId(opts.conn)}: Programming error? getTxt() called with invalid call arguments`;
+      return `${lib.connId(opts.conn)}: Programming error? getTxt() called with invalid call arguments`;
     });
     return Promise.reject(new Error('MISSING REQUIRED HOST'));
   }
@@ -164,27 +157,27 @@ function getTxt(opts) {
 
     var host = `_mta-sts.${opts.host}`;
     logger.log(logger.DEBUG, function() {
-      return `${connId(opts.conn)}: calling dns.resolveTxt(${host})`;
+      return `${lib.connId(opts.conn)}: calling dns.resolveTxt(${host})`;
     });
 
     dns.resolveTxt(host, function(err, data) {
 
       if (err) {
         logger.log(logger.DEBUG, function() {
-          return `${connId(opts.conn)}: dns.resolveTxt() error; err = ${err.message}`;
+          return `${lib.connId(opts.conn)}: dns.resolveTxt() error; err = ${err.message}`;
         });
         return reject(err);
       }
 
       if (_.isEmpty(data) || !Array.isArray(data)) {
         logger.log(logger.WARNING, function() {
-          return `${connId(opts.conn)}: Programming error? dns.resolveTxt() didn't return [][]?`;
+          return `${lib.connId(opts.conn)}: Programming error? dns.resolveTxt() didn't return [][]?`;
         });
         return Promise.reject(new Error('EMPTY OR MISSING TXT RECORD'));
       }
       else if (data.length !== 1) {
         logger.log(logger.DEBUG, function() {
-          return `${connId(opts.conn)}: dns.resolveHost(${host}) led to more than one TXT RR`;
+          return `${lib.connId(opts.conn)}: dns.resolveHost(${host}) led to more than one TXT RR`;
         });
         return Promise.reject(new Error('EMPTY OR MISSING TXT RECORD'));
       }
@@ -193,7 +186,7 @@ function getTxt(opts) {
       opts.txt_rr = data.slice(0);
 
       logger.log(logger.DEBUG, function() {
-        return `${connId(opts.conn)}: dns.resolveTxt(${host}) returned ${opts.txt_rr}`;
+        return `${lib.connId(opts.conn)}: dns.resolveTxt(${host}) returned ${opts.txt_rr}`;
       });
 
       // And return the opts context
@@ -206,7 +199,7 @@ function validateTxt(opts) {
 
   if (_.isEmpty(opts) || _.isEmpty(opts.txt_rr)) {
     logger.log(logger.WARNING, function() {
-      return `${connId(opts.conn)}: Programming error? validateTxt() called with invalid call arguments`;
+      return `${lib.connId(opts.conn)}: Programming error? validateTxt() called with invalid call arguments`;
     });
     return Promise.reject(new Error('EMPTY OR MISSING TXT RECORD'));
   }
@@ -215,7 +208,7 @@ function validateTxt(opts) {
   var tmp = opts.txt_rr[0].join('');
   if (_.isEmpty(tmp)) {
     logger.log(logger.DEBUG, function() {
-      return `${connId(opts.conn)}: ${opts.host} led to an empty TXT RR`;
+      return `${lib.connId(opts.conn)}: ${opts.host} led to an empty TXT RR`;
     });
     return Promise.reject(new Error('EMPTY OR MISSING TXT RECORD'));
   }
@@ -244,12 +237,12 @@ function validateTxt(opts) {
   }
   if (!('v' in opts) || !('id' in opts)) {
     logger.log(logger.DEBUG, function() {
-      return `${connId(opts.conn)}: ${opts.host} TXT RR lacks "v" or "id" values`;
+      return `${lib.connId(opts.conn)}: ${opts.host} TXT RR lacks "v" or "id" values`;
     });
     return Promise.reject(new Error('INVALID TXT RR'));
   }
   logger.log(logger.DEBUG, function() {
-    return `${connId(opts.conn)}: ${opts.host} TXT RR v=${opts.v} and id=${opts.id}`;
+    return `${lib.connId(opts.conn)}: ${opts.host} TXT RR v=${opts.v} and id=${opts.id}`;
   });
   return Promise.resolve(opts);
 }
@@ -259,14 +252,14 @@ function getPolicy(opts) {
   if (_.isEmpty(opts)) {
     // Some sort of programming error
     logger.log(logger.WARNING, function() {
-      return `${connId(opts.conn)}: Programming error? getPolicy() called with invalid call arguments`;
+      return `${lib.connId(opts.conn)}: Programming error? getPolicy() called with invalid call arguments`;
     });
     return Promise.reject(new Error('PROGRAMMING ERROR?'));
   }
   else if (opts.conn && opts.conn.destroyed) {
     // Don't bother with the HTTP request if the client has closed the connection
     logger.log(logger.DEBUG, function() {
-      return `${connId(opts.conn)}: Connection closed before getPolicy() invoked; terminating the promise chain`;
+      return `${lib.connId(opts.conn)}: Connection closed before getPolicy() invoked; terminating the promise chain`;
     });
     return Promise.reject(new ERROR('CLIENT CONNECTION CLOSED'));
   }
@@ -274,7 +267,7 @@ function getPolicy(opts) {
   return new Promise(function(resolve, reject) {
     var url = `http://mta-sts.${opts.host}/.well-known/mta-sts.txt`;
     logger.log(logger.DEBUG, function() {
-      return `${connId(opts.conn)}: getPolicy() performing HTTP GET of ${url}`;
+      return `${lib.connId(opts.conn)}: getPolicy() performing HTTP GET of ${url}`;
     });
     request({
       url: url,
@@ -285,12 +278,12 @@ function getPolicy(opts) {
     }, function (err, res, body) {
       if (err || _.isEmpty(res) || _.isEmpty(body)) {
         logger.log(logger.DEBUG, function() {
-          return `${connId(opts.conn)}: HTTP GET failed`;
+          return `${lib.connId(opts.conn)}: HTTP GET failed`;
         });
         return reject(new Error(`HTTP LOOKUP FAILED; ${err.message}`));
       }
       logger.log(logger.DEBUG, function() {
-        return `${connId(opts.conn)}: HTTP GET responsed with a status code of ${res.statusCode}`;
+        return `${lib.connId(opts.conn)}: HTTP GET responsed with a status code of ${res.statusCode}`;
       });
       if (res.statusCode < 200 || res.statusCode >= 300) {
         return reject(new Error(`HTTP LOOKUP FAILED; ${res.statusCode}`));
