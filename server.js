@@ -6,18 +6,47 @@ const request = require('request');
 const _ = require('lodash');
 const isFQDN = require('validator/lib/isFQDN');
 const Promise = require('bluebird');
+const logger = require('./logger');
 
-const PORT = process.env.PORT || 9000;
-const ADDR = process.env.BIND || '0.0.0.0';
+logger.logLevel(logger.DEBUG);
 
+const listenPort = process.env.PORT || 9000;
+const bindAddr = process.env.BIND || '0.0.0.0';
+
+var connCounter = 0;
+
+// Create our TCP server
 var server = net.createServer();
+
+// Use handleConnection() to handle accepted sockets
 server.on('connection', handleConnection);
-server.listen(PORT, ADDR, function() {
+
+// Log that we're listening...
+server.listen(listenPort, bindAddr, function() {
   var addrInfo = server.address();
-  console.log(`server listening on ${addrInfo.address || '??'}:${addrInfo.port || '??'}`);
+  logger.log(logger.NOTICE, `server listening on ${addrInfo.address || '??'}:${addrInfo.port || '??'}`);
 });
 
+function sendError(conn, msg) {
+  if (conn) {
+    conn.write(`-${msg || error}\r\n`);
+  }
+}
+
+function pad(m, width) {
+  return ('00000000000' + m).slice(-(width || 2));
+}
+
+function connId(conn) {
+  return conn && conn._sts ? conn._sts.id || '00000000' : '00000000'
+}
+
 function handleConnection(conn) {
+
+  var addrInfo = conn.address();
+  conn._sts = { id: pad(connCounter, 8) };
+  connCounter += 1;
+  logger.log(logger.INFO, `${connId(conn)}: New connection from ${addrInfo.address || '??'}:${addrInfo.port || '??'}`);
 
   conn.on('data', onConnData);
   conn.once('close', onConnClose);
@@ -25,11 +54,9 @@ function handleConnection(conn) {
 
   function onConnData(d) {
 
-    d._sts = { msg: 'fooberry' };
-
     var data = d.toString();
     if (_.isEmpty(data) || !_.isString(data)) {
-      // What to do
+      // TO DO
     }
 
     var tokens = data.trim().split(' ');
@@ -38,12 +65,21 @@ function handleConnection(conn) {
 
       case 'STS':
         if (tokens.length < 2) {
-          conn.write('-MISSING DOMAIN NAME\r\n');
+          logger.log(logger.DEBUG, function() {
+            return `${connId(conn)}: STS command with no domain name`;
+          });
+          sendError(conn, 'MISSING DOMAIN NAME');
         }
         else if (!isFQDN(tokens[1], {require_tld: true, allow_underscores: false, allow_trailing_dot: false})) {
-          conn.write('-INVALID DOMAIN NAME\r\n');
+          logger.log(logger.DEBUG, function() {
+            return `${connId(conn)}: STS command with invalid domain name`;
+          });
+          sendError(conn, 'INVALID DOMAIN NAME');
         }
         else {
+          logger.log(logger.DEBUG, function() {
+            return `${connId(conn)}: STS ${tokens[1]}}`;
+          });
           var opts = new Object();
           opts.host = tokens[1];
           return getTxt(opts)
@@ -53,7 +89,7 @@ function handleConnection(conn) {
               conn.write(str + '\r\n');
             })
             .catch(function(err) {
-              conn.write('-' + err.message + '\r\n');
+              sendError(conn, err.message);
             });
         }
         break;
@@ -71,22 +107,36 @@ function handleConnection(conn) {
   }
 
   function onConnClose(d) {
-    console.log('Socket closed: msg=', d._sts ? d._sts.msg : '');
+    // conn is no longer valid
+    logger.log(logger.INFO, `${connId(null)}: Connection closed`);
   }
 
-  function onConnError(d) {
+  function onConnError(err) {
+    // ERR passed?
+    console.log(err);
+    logger.log(logger.WARNING, `${connId(conn)}: Connection error; closing connection`);
     conn.end('+BYE\r\n');
   }
 }
 
 function getTxt(opts) {
   if (_.isEmpty(opts) || _.isEmpty(opts.host)) {
+    logger.log(logger.WARNING, function() {
+      return `${connId(conn)}: Programming error? getTxt() called with invalid call arguments`;
+    });
     return Promise.reject(new Error('MISSING REQUIRED HOST'));
   }
 
   return new Promise(function(resolve, reject) {
-    dns.resolveTxt(`_mta-sts.${opts.host}`, function(err, data) {
+    var host = `_mta-sts.${opts.host}`;
+    logger.log(logger.DEBUG, function() {
+      return `${connId(conn)}: dns.resolveTxt(${host})`;
+    });
+    dns.resolveTxt(host, function(err, data) {
       if (err) {
+        logger.log(logger.DEBUG, function() {
+          return `${connId(conn)}: dns.resolveTxt() error; err = ${err.message}`;
+        });
         return reject(err);
       }
       opts.txt_rr = data.slice(0);
@@ -135,7 +185,7 @@ function validateTxt(opts) {
     }
   }
   if (!('v' in opts) || !('id' in opts)) {
-    return Promise.reject(new Error('-INVALID TXT RR'));
+    return Promise.reject(new Error('INVALID TXT RR'));
   }
   return Promise.resolve(opts);
 }
@@ -143,23 +193,22 @@ function validateTxt(opts) {
 function getPolicy(opts) {
   if (_.isEmpty(opts)) {
     // Some sort of programming error
-    return Promise.reject(new Error('-PROGRAMMING ERROR?'));
+    return Promise.reject(new Error('PROGRAMMING ERROR?'));
   }
 
-  var httpOpts = {
-    url: `http://mta-sts.${opts.host}/.well-known/mta-sts.txt`,
-    method: 'GET',
-    followRedirect: false,
-    followAllRedirects: false,
-    // strictSSL: true
-  };
   return new Promise(function(resolve, reject) {
-    request(httpOpts, function (err, res, body) {
+    request({
+      url: `http://mta-sts.${opts.host}/.well-known/mta-sts.txt`,
+      method: 'GET',
+      followRedirect: false,
+      followAllRedirects: false,
+      // strictSSL: true
+    }, function (err, res, body) {
       if (err || _.isEmpty(res) || _.isEmpty(body)) {
-        return reject(new Error(`-HTTP LOOKUP FAILED; ${err.message}`));
+        return reject(new Error(`HTTP LOOKUP FAILED; ${err.message}`));
       }
       if (res.statusCode < 200 || res.statusCode >= 300) {
-        return reject(new Error(`-HTTP LOOKUP FAILED; ${res.statusCode}`));
+        return reject(new Error(`HTTP LOOKUP FAILED; ${res.statusCode}`));
       }
       return resolve(body);
     });
