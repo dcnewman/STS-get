@@ -3,13 +3,13 @@
 const version = '0.1';
 
 const lib = require('./lib');
+const logger = require('./logger');
 const dns = require('dns');
 const net = require('net');
 const request = require('request');
 const _ = require('lodash');
 const isFQDN = require('validator/lib/isFQDN');
 const Promise = require('bluebird');
-const logger = require('./logger');
 
 // production or development environment/config?
 const config = require(`./config.${process.env.NODE_ENV || 'development'}.js`);
@@ -61,15 +61,15 @@ function handleConnection(conn) {
       case 'STS':
         if (tokens.length < 2) {
           logger.log(logger.DEBUG, function() {
-            return `${lib.connId(conn)}: STS command with no domain name`;
+            return `${lib.connId(conn)}: STS command received with no domain name`;
           });
-          lib.sendError(conn, 'MISSING DOMAIN NAME');
+          lib.sendError(conn, 'HOST MISSING');
         }
         else if (!isFQDN(tokens[1], {require_tld: true, allow_underscores: false, allow_trailing_dot: false})) {
           logger.log(logger.DEBUG, function() {
             return `${lib.connId(conn)}: STS command with invalid domain name`;
           });
-          lib.sendError(conn, 'INVALID DOMAIN NAME');
+          lib.sendError(conn, 'HOST INVALID');
         }
         else {
           logger.log(logger.DEBUG, function() {
@@ -84,9 +84,7 @@ function handleConnection(conn) {
             .then(function(str) {
               // Ensure that the connection wasn't closed by a QUIT
               // command received whilst we were waiting on DNS and HTTP requests
-              if (!conn.destroyed) {
-                conn.write(str);
-              }
+              lib.send(conn, str);
             })
             .catch(function(err) {
               logger.log(logger.DEBUG, function() {
@@ -110,7 +108,7 @@ function handleConnection(conn) {
         logger.log(logger.DEBUG, function() {
           return `${lib.connId(conn)}: VERSION received; sending version number ${version}`;
         });
-        conn.write(version + '\r\n');
+        lib.send(conn, `+${version}\r\n`);
         break;
 
       default:
@@ -118,6 +116,7 @@ function handleConnection(conn) {
           // Only log the first 10 chars of the command
           return `${lib.connId(conn)}: Unrecognized command received; ${cmd.substr(0, 10)}`;
         });
+        lib.sendError(conn, 'UNKNOWN COMMAND');
         break;
     }
   }
