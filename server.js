@@ -37,14 +37,23 @@ function pad(m, width) {
   return ('00000000000' + m).slice(-(width || 2));
 }
 
+const defaultId = pad(0, 8);
+
 function connId(conn) {
-  return conn && conn._sts ? conn._sts.id || '00000000' : '00000000'
+  if (typeof(conn) === 'object') {
+    return conn && conn._sts ? conn._sts.id || defaultId : defaultId;
+  }
+  else if (typeof(conn) === 'string') {
+    return conn;
+  }
+  return defaultId;
 }
 
 function handleConnection(conn) {
 
   var addrInfo = conn.address();
-  conn._sts = { id: pad(connCounter, 8) };
+  var id = pad(connCounter, 8);
+  conn._sts = { id: id };
   connCounter += 1;
   logger.log(logger.INFO, `${connId(conn)}: New connection from ${addrInfo.address || '??'}:${addrInfo.port || '??'}`);
 
@@ -78,18 +87,26 @@ function handleConnection(conn) {
         }
         else {
           logger.log(logger.DEBUG, function() {
-            return `${connId(conn)}: STS ${tokens[1]}}`;
+            return `${connId(conn)}: STS ${tokens[1]}`;
           });
           var opts = new Object();
+          opts.conn = conn;
           opts.host = tokens[1];
           return getTxt(opts)
             .then(validateTxt)
             .then(getPolicy)
             .then(function(str) {
-              conn.write(str + '\r\n');
+              if (!conn.destroyed) {
+                conn.write(str);
+              }
             })
             .catch(function(err) {
-              sendError(conn, err.message);
+              logger.log(logger.DEBUG, function() {
+                return `${connId(conn)}: STS command failed; err = ${err.message}`;
+              });
+              if (!conn.destroyed) {
+                sendError(conn, err.message);
+              }
             });
         }
         break;
@@ -108,21 +125,22 @@ function handleConnection(conn) {
 
   function onConnClose(d) {
     // conn is no longer valid
-    logger.log(logger.INFO, `${connId(null)}: Connection closed`);
+    logger.log(logger.INFO, `${connId(id)}: Connection closed`);
   }
 
   function onConnError(err) {
     // ERR passed?
-    console.log(err);
     logger.log(logger.WARNING, `${connId(conn)}: Connection error; closing connection`);
-    conn.end('+BYE\r\n');
+    if (!conn.destroyed) {
+      conn.end('+BYE\r\n');
+    }
   }
 }
 
 function getTxt(opts) {
   if (_.isEmpty(opts) || _.isEmpty(opts.host)) {
     logger.log(logger.WARNING, function() {
-      return `${connId(conn)}: Programming error? getTxt() called with invalid call arguments`;
+      return `${connId(opts.conn)}: Programming error? getTxt() called with invalid call arguments`;
     });
     return Promise.reject(new Error('MISSING REQUIRED HOST'));
   }
@@ -130,16 +148,19 @@ function getTxt(opts) {
   return new Promise(function(resolve, reject) {
     var host = `_mta-sts.${opts.host}`;
     logger.log(logger.DEBUG, function() {
-      return `${connId(conn)}: dns.resolveTxt(${host})`;
+      return `${connId(opts.conn)}: calling dns.resolveTxt(${host})`;
     });
     dns.resolveTxt(host, function(err, data) {
       if (err) {
         logger.log(logger.DEBUG, function() {
-          return `${connId(conn)}: dns.resolveTxt() error; err = ${err.message}`;
+          return `${connId(opts.conn)}: dns.resolveTxt() error; err = ${err.message}`;
         });
         return reject(err);
       }
       opts.txt_rr = data.slice(0);
+      logger.log(logger.DEBUG, function() {
+        return `${connId(opts.conn)}: dns.resolveTxt(${host}) returned ${opts.txt_rr}`;
+      });
       return resolve(opts);
     });
   });
@@ -147,18 +168,30 @@ function getTxt(opts) {
 
 function validateTxt(opts) {
   if (_.isEmpty(opts) || _.isEmpty(opts.txt_rr)) {
+    logger.log(logger.WARNING, function() {
+      return `${connId(opts.conn)}: Programming error? validateTxt() called with invalid call arguments`;
+    });
     return Promise.reject(new Error('EMPTY OR MISSING TXT RECORD'));
   }
   else if (!Array.isArray(opts.txt_rr)) {
+    logger.log(logger.WARNING, function() {
+      return `${connId(opts.conn)}: Programming error? dns.resolveTxt() didn't return [][]?`;
+    });
     return Promise.reject(new Error('EMPTY OR MISSING TXT RECORD'));
   }
   else if (opts.txt_rr.length !== 1) {
+    logger.log(logger.DEBUG, function() {
+      return `${connId(opts.conn)}: ${opts.host} led to more than one TXT RR`;
+    });
     return Promise.reject(new Error('EMPTY OR MISSING TXT RECORD'));
   }
 
   // dns.resolveTxt() returns an array of array!
   var tmp = opts.txt_rr[0].join('');
   if (_.isEmpty(tmp)) {
+    logger.log(logger.DEBUG, function() {
+      return `${connId(opts.conn)}: ${opts.host} led to an empty TXT RR`;
+    });
     return Promise.reject(new Error('EMPTY OR MISSING TXT RECORD'));
   }
 
@@ -185,8 +218,14 @@ function validateTxt(opts) {
     }
   }
   if (!('v' in opts) || !('id' in opts)) {
+    logger.log(logger.DEBUG, function() {
+      return `${connId(opts.conn)}: ${opts.host} TXT RR lacks "v" or "id" values`;
+    });
     return Promise.reject(new Error('INVALID TXT RR'));
   }
+  logger.log(logger.DEBUG, function() {
+    return `${connId(opts.conn)}: ${opts.host} TXT RR v=${opts.v} and id=${opts.id}`;
+  });
   return Promise.resolve(opts);
 }
 

@@ -73,8 +73,8 @@ function log(level, msg) {
 function logLevel(lvl) {
   var old_level = log_level;
   if (!isNaN(lvl) && 0 <= lvl && lvl < log_level_str.length) {
-    winston.level = log_level_str[lvl];
     log_level = lvl;
+    logger.transports.console.level = log_level_str[lvl];
   }
   return old_level;
 }
