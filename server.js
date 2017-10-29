@@ -176,6 +176,19 @@ function getTxt(opts) {
         return reject(err);
       }
 
+      if (_.isEmpty(data) || !Array.isArray(data)) {
+        logger.log(logger.WARNING, function() {
+          return `${connId(opts.conn)}: Programming error? dns.resolveTxt() didn't return [][]?`;
+        });
+        return Promise.reject(new Error('EMPTY OR MISSING TXT RECORD'));
+      }
+      else if (data.length !== 1) {
+        logger.log(logger.DEBUG, function() {
+          return `${connId(opts.conn)}: dns.resolveHost(${host}) led to more than one TXT RR`;
+        });
+        return Promise.reject(new Error('EMPTY OR MISSING TXT RECORD'));
+      }
+
       // Make a copy of the returned value and push it into the opts context
       opts.txt_rr = data.slice(0);
 
@@ -190,22 +203,10 @@ function getTxt(opts) {
 }
 
 function validateTxt(opts) {
-  
+
   if (_.isEmpty(opts) || _.isEmpty(opts.txt_rr)) {
     logger.log(logger.WARNING, function() {
       return `${connId(opts.conn)}: Programming error? validateTxt() called with invalid call arguments`;
-    });
-    return Promise.reject(new Error('EMPTY OR MISSING TXT RECORD'));
-  }
-  else if (!Array.isArray(opts.txt_rr)) {
-    logger.log(logger.WARNING, function() {
-      return `${connId(opts.conn)}: Programming error? dns.resolveTxt() didn't return [][]?`;
-    });
-    return Promise.reject(new Error('EMPTY OR MISSING TXT RECORD'));
-  }
-  else if (opts.txt_rr.length !== 1) {
-    logger.log(logger.DEBUG, function() {
-      return `${connId(opts.conn)}: ${opts.host} led to more than one TXT RR`;
     });
     return Promise.reject(new Error('EMPTY OR MISSING TXT RECORD'));
   }
@@ -254,22 +255,43 @@ function validateTxt(opts) {
 }
 
 function getPolicy(opts) {
+
   if (_.isEmpty(opts)) {
     // Some sort of programming error
+    logger.log(logger.WARNING, function() {
+      return `${connId(opts.conn)}: Programming error? getPolicy() called with invalid call arguments`;
+    });
     return Promise.reject(new Error('PROGRAMMING ERROR?'));
+  }
+  else if (opts.conn && opts.conn.destroyed) {
+    // Don't bother with the HTTP request if the client has closed the connection
+    logger.log(logger.DEBUG, function() {
+      return `${connId(opts.conn)}: Connection closed before getPolicy() invoked; terminating the promise chain`;
+    });
+    return Promise.reject(new ERROR('CLIENT CONNECTION CLOSED'));
   }
 
   return new Promise(function(resolve, reject) {
+    var url = `http://mta-sts.${opts.host}/.well-known/mta-sts.txt`;
+    logger.log(logger.DEBUG, function() {
+      return `${connId(opts.conn)}: getPolicy() performing HTTP GET of ${url}`;
+    });
     request({
-      url: `http://mta-sts.${opts.host}/.well-known/mta-sts.txt`,
+      url: url,
       method: 'GET',
       followRedirect: false,
       followAllRedirects: false,
       // strictSSL: true
     }, function (err, res, body) {
       if (err || _.isEmpty(res) || _.isEmpty(body)) {
+        logger.log(logger.DEBUG, function() {
+          return `${connId(opts.conn)}: HTTP GET failed`;
+        });
         return reject(new Error(`HTTP LOOKUP FAILED; ${err.message}`));
       }
+      logger.log(logger.DEBUG, function() {
+        return `${connId(opts.conn)}: HTTP GET responsed with a status code of ${res.statusCode}`;
+      });
       if (res.statusCode < 200 || res.statusCode >= 300) {
         return reject(new Error(`HTTP LOOKUP FAILED; ${res.statusCode}`));
       }
