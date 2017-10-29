@@ -1,5 +1,7 @@
 'use strict';
 
+const version = '0.1';
+
 const dns = require('dns');
 const net = require('net');
 const request = require('request');
@@ -96,6 +98,8 @@ function handleConnection(conn) {
             .then(validateTxt)
             .then(getPolicy)
             .then(function(str) {
+              // Ensure that the connection wasn't closed by a QUIT
+              // command received whilst we were waiting on DNS and HTTP requests
               if (!conn.destroyed) {
                 conn.write(str);
               }
@@ -104,6 +108,8 @@ function handleConnection(conn) {
               logger.log(logger.DEBUG, function() {
                 return `${connId(conn)}: STS command failed; err = ${err.message}`;
               });
+              // Ensure that the connection wasn't closed by a QUIT
+              // command received whilst we were waiting on DNS and HTTP requests
               if (!conn.destroyed) {
                 sendError(conn, err.message);
               }
@@ -116,7 +122,7 @@ function handleConnection(conn) {
         break;
 
       case 'VERSION':
-        conn.write('+0.1\r\n');
+        conn.write(version + '\r\n');
         break;
 
       default: break;
@@ -137,7 +143,15 @@ function handleConnection(conn) {
   }
 }
 
+// getTxt() -- Return a promise to perform a DNS TXT RR lookup
+//   As we call dns.resolveTxt() and return its return value,
+//   our resolution is a two-dimensional array.   We do not
+//   validate the dns.resolveTxt() results here.  We leave that
+//   to another routine in our promise chain.
+
 function getTxt(opts) {
+
+  // Sanity checks
   if (_.isEmpty(opts) || _.isEmpty(opts.host)) {
     logger.log(logger.WARNING, function() {
       return `${connId(opts.conn)}: Programming error? getTxt() called with invalid call arguments`;
@@ -145,28 +159,38 @@ function getTxt(opts) {
     return Promise.reject(new Error('MISSING REQUIRED HOST'));
   }
 
+  // Return a promise to lookup a TXT record for the host _mta-sts.<opts.host>
   return new Promise(function(resolve, reject) {
+
     var host = `_mta-sts.${opts.host}`;
     logger.log(logger.DEBUG, function() {
       return `${connId(opts.conn)}: calling dns.resolveTxt(${host})`;
     });
+
     dns.resolveTxt(host, function(err, data) {
+
       if (err) {
         logger.log(logger.DEBUG, function() {
           return `${connId(opts.conn)}: dns.resolveTxt() error; err = ${err.message}`;
         });
         return reject(err);
       }
+
+      // Make a copy of the returned value and push it into the opts context
       opts.txt_rr = data.slice(0);
+
       logger.log(logger.DEBUG, function() {
         return `${connId(opts.conn)}: dns.resolveTxt(${host}) returned ${opts.txt_rr}`;
       });
+
+      // And return the opts context
       return resolve(opts);
     });
   });
 }
 
 function validateTxt(opts) {
+  
   if (_.isEmpty(opts) || _.isEmpty(opts.txt_rr)) {
     logger.log(logger.WARNING, function() {
       return `${connId(opts.conn)}: Programming error? validateTxt() called with invalid call arguments`;
