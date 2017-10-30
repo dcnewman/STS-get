@@ -151,7 +151,7 @@ function handleConnection(conn) {
       case 'STATS':
         stats.requests.STATS += 1;
         stats.time.up = Math.floor(((new Date()) - stats.time.start) / 1000);
-        lib.send(conn, JSON.stringify(stats) + '\r\n');
+        lib.send(conn, `+${JSON.stringify(stats)}\r\n`);
         break;
 
       default:
