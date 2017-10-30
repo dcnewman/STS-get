@@ -1,3 +1,26 @@
+// MIT License
+//
+// Copyright (c) 2017
+// Dan Newman <dan.c.newman@icloud.com>, Ned Freed <ned.freed@mrochek.com>
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 'use strict';
 
 var winston = require('winston');
@@ -8,7 +31,7 @@ winston.handleExceptions = true;
 winston.emitErrs = false;
 winston.exitOnErr = false;
 
-// We use more traditional syslog values
+// Traditional syslog levels for use by our callers
 const EMERG   = 0;
 const ALERT   = 1;
 const CRIT    = 2;  // aka, CRITICAL
@@ -18,7 +41,8 @@ const NOTICE  = 5;
 const INFO    = 6;
 const DEBUG   = 7;
 
-// For turning a string log level into a numeric value
+// For turning a log level name into a numeric value
+// We use lower case as Winston uses lower case
 const log_level_str = ['emerg', 'alert', 'crit', 'error', 'warning', 'notice', 'info', 'debug'];
 
 // What logging level were we invoked with?
@@ -31,8 +55,10 @@ if (log_level < 0) {
   log_level = INFO;
 }
 
-// Log to the console
-var logger = new (winston.Logger)({
+// Instantiate a logging context
+//  presently we just log to the console
+var logger = new (winston.Logger)(
+  {
     levels: winston.config.syslog.levels,
     level: level,
     handleExceptions: true,
@@ -41,14 +67,16 @@ var logger = new (winston.Logger)({
     transports: [ new (winston.transports.Console)({timestamp: true}) ]
   });
 
-// Log the message 'msg' if the logging level is <= 'level'
+// Log the message 'msg' if the current logging level is <= 'level'.
 //  msg may be a function.  This permits not building the logging string
 //  unless we know we will actually log the message.
 //
-// And yes, we only log strings (or functions which evaluate to a string)
+// And yes, we only log strings (or functions which evaluate to a string).
 
 function log(level, msg) {
+
   if (level > log_level)
+    // Return now and don't bother evaluating msg if it is a function
     return;
 
   if (typeof(msg) === 'function')
@@ -57,6 +85,9 @@ function log(level, msg) {
   if (typeof(msg) !== 'string')
     return;
 
+  logger.log(log_level_str[level], msg);
+
+  /*
   switch (level) {
   case EMERG:   logger.emerg(msg); return;
   case ALERT:   logger.alert(msg); return;
@@ -68,18 +99,23 @@ function log(level, msg) {
   case DEBUG:   logger.debug(msg); return;
   default:      logger.info(msg); return;
   }
+  */
 }
 
+// Set the logging level
 function logLevel(lvl) {
-  if (isNaN(lvl) && typeof(lvl) === 'string') {
-    var l = log_level_str.indexOf(lvl.toLowerCase());
-    if (l < 0) {
-      return log_level;
+
+  if (typeof(lvl) === 'string') {
+    if (isNaN(lvl)) {
+      lvl = log_level_str.indexOf(lvl.toLowerCase());
     }
-    lvl = l;
+    else {
+      lvl = parseInt(lvl, 10);
+    }
   }
+
   var old_level = log_level;
-  if (!isNaN(lvl) && 0 <= lvl && lvl < log_level_str.length) {
+  if (0 <= lvl && lvl < log_level_str.length) {
     log_level = lvl;
     logger.transports.console.level = log_level_str[lvl];
   }

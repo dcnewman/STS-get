@@ -1,3 +1,26 @@
+// MIT License
+//
+// Copyright (c) 2017
+// Dan Newman <dan.c.newman@icloud.com>, Ned Freed <ned.freed@mrochek.com>
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 'use strict';
 
 const version = '0.1';
@@ -194,6 +217,7 @@ function getTxt(opts) {
   });
 }
 
+// Parse and validate the obtained TXT RR
 function validateTxt(opts) {
 
   if (_.isEmpty(opts) || _.isEmpty(opts.txt_rr)) {
@@ -234,18 +258,29 @@ function validateTxt(opts) {
         break;
     }
   }
+
+  // Did we obtain both v and id values?
+  // - If we have a v field, we know it must have been stsv1; otherwise,
+  //     we would not have saved it.
+  // - If we have an id value, it can be most anything
+
   if (!('v' in opts) || !('id' in opts)) {
     logger.log(logger.DEBUG, function() {
       return `${lib.connId(opts.conn)}: ${opts.host} TXT RR lacks "v" or "id" values`;
     });
     return Promise.reject(new Error('INVALID TXT RR'));
   }
+
+  // All set to move on
   logger.log(logger.DEBUG, function() {
     return `${lib.connId(opts.conn)}: ${opts.host} TXT RR v=${opts.v} and id=${opts.id}`;
   });
+
   return Promise.resolve(opts);
 }
 
+// Perform an HTTPS GET to obtain the policy
+//   We disallow redirects and require a valid SSL cert
 function getPolicy(opts) {
 
   if (_.isEmpty(opts)) {
@@ -263,11 +298,16 @@ function getPolicy(opts) {
     return Promise.reject(new ERROR('CLIENT CONNECTION CLOSED'));
   }
 
+  // Promisify request.get()
   return new Promise(function(resolve, reject) {
+
     var url = `http://mta-sts.${opts.host}/.well-known/mta-sts.txt`;
     logger.log(logger.DEBUG, function() {
       return `${lib.connId(opts.conn)}: getPolicy() performing HTTP GET of ${url}`;
-    });
+    })
+
+    // Note that we will be subject to the operating system's connect timeout
+    // here.  That is, we may be stuck for 2 minutes give or take.
     request({
       url: url,
       method: 'GET',
@@ -275,19 +315,28 @@ function getPolicy(opts) {
       followAllRedirects: false,
       // strictSSL: true
     }, function (err, res, body) {
-      if (err || _.isEmpty(res) || _.isEmpty(body)) {
+
+      if (err) {
         logger.log(logger.DEBUG, function() {
-          return `${lib.connId(opts.conn)}: HTTP GET failed`;
+          return `${lib.connId(opts.conn)}: HTTP GET failed; ${err.message}`;
         });
-        return reject(new Error(`HTTP LOOKUP FAILED; ${err.message}`));
+        return reject(new Error(`HTTP GET FAILED; ${err.message}`));
       }
+      else if(_.isEmpty(res)) {
+        // empty(res) should never occur
+        logger.log(logger.DEBUG, function() {
+          return `${lib.connId(opts.conn)}: HTTP GET failed; res is empty`;
+        });
+        return reject(new Error(`HTTP GET FAILED`));
+      }
+      
       logger.log(logger.DEBUG, function() {
-        return `${lib.connId(opts.conn)}: HTTP GET responsed with a status code of ${res.statusCode}`;
+        return `${lib.connId(opts.conn)}: HTTP GET responsed; status ${res.statusCode}`;
       });
       if (res.statusCode < 200 || res.statusCode >= 300) {
-        return reject(new Error(`HTTP LOOKUP FAILED; ${res.statusCode}`));
+        return reject(new Error(`HTTP GET FAILED; ${res.statusCode}`));
       }
-      return resolve(body);
+      return resolve(body || '');
     });
   });
 }
