@@ -182,22 +182,25 @@ function getTxt(opts) {
       return `${lib.connId(opts.conn)}: calling dns.resolveTxt(${host})`;
     });
 
+    // Look for a TXT record
     dns.resolveTxt(host, function(err, data) {
 
       if (err) {
         logger.log(logger.DEBUG, function() {
-          return `${lib.connId(opts.conn)}: dns.resolveTxt() error; err = ${err.message}`;
+          return `${lib.connId(opts.conn)}: dns.resolveTxt() error; err = ${err.code || err.message}`;
         });
-        return reject(err);
+        return reject(new Error(`FAILED TXT LOOKUP; ${err.code || err.message}`));
       }
 
       if (_.isEmpty(data) || !Array.isArray(data)) {
+        // Should never happen....
         logger.log(logger.WARNING, function() {
           return `${lib.connId(opts.conn)}: Programming error? dns.resolveTxt() didn't return [][]?`;
         });
         return Promise.reject(new Error('EMPTY OR MISSING TXT RECORD'));
       }
       else if (data.length !== 1) {
+        // More than one TXT RR?  Is the host name multi homed?
         logger.log(logger.DEBUG, function() {
           return `${lib.connId(opts.conn)}: dns.resolveHost(${host}) led to more than one TXT RR`;
         });
@@ -334,7 +337,7 @@ function getPolicy(opts) {
     var url = `http://mta-sts.${opts.host}/.well-known/mta-sts.txt`;
     logger.log(logger.DEBUG, function() {
       return `${lib.connId(opts.conn)}: getPolicy() performing HTTP GET of ${url}`;
-    })
+    });
 
     // Note that we will be subject to the operating system's connect timeout
     // here.  That is, we may be stuck for 2 minutes give or take.
