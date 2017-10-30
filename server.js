@@ -236,14 +236,44 @@ function validateTxt(opts) {
     return Promise.reject(new Error('EMPTY OR MISSING TXT RECORD'));
   }
 
+  // TXT RR should be a string of attribute=value pairs which
+  // are delimited by semi colons.  Whitespace can be ignored.
+
+  // Remove all whitespace and then split on ;
   var tokens = tmp.replace(/\s/g, '').split(';');
+
+  // And now parse what we found
+
+  // All we care about are v= and id= pairs
+  // We here parse left to right.  And so if there are
+  // multiple v= or id= pairs, we'll only note the right
+  // most occurrence of any which is repeated.
+
   var i;
   for (i = 0; i < tokens.length; i++) {
+
+    // Split name=value into name & value
+    //   nv[0] is the name
+    //   nv[1] is the value
     var nv = tokens[i].split('=');
-    if (nv.length !== 2) {
-      //
+
+    // Sanity checks
+    if (nv.length < 2) {
+      // TODO -- no '=' ???
+      // For now, skip over
+      continue;
     }
+    else if (nv.length > 2) {
+      // TODO -- treat as an error instead?
+      // Hmm... multiple occurrences of '='
+      // re-constitute nv[1],nv[2],... into a single string
+      nv = [ nv[0], nv.slice(1).join('') ];
+    }
+
+    // Now handle the value based upon the name
+    //   for now, treat the names as case insensitive
     switch (nv[0].toLowerCase()) {
+
       case 'v':
         if (nv[1].toLowerCase() === 'stsv1') {
           opts.v = 1;
@@ -329,7 +359,7 @@ function getPolicy(opts) {
         });
         return reject(new Error(`HTTP GET FAILED`));
       }
-      
+
       logger.log(logger.DEBUG, function() {
         return `${lib.connId(opts.conn)}: HTTP GET responsed; status ${res.statusCode}`;
       });
