@@ -40,6 +40,13 @@ const config = require(`./config.${process.env.NODE_ENV || 'development'}.js`);
 // Set the logging level
 logger.logLevel(config.logLevel);
 
+// Stats
+var stats = {
+  time: { start: new Date(), up: 0 },
+  connections: { open: 0, total: 0 },
+  requests: { QUIT: 0, STATS: 0, STS: 0, VERSION: 0, bad: 0} ,
+};
+
 // Create our TCP server
 var server = net.createServer();
 
@@ -60,6 +67,9 @@ server.listen(config.listenPort, config.bindAddr, function() {
 
 // handleConnection is our primary routine for handling an inbound client connection
 function handleConnection(conn) {
+
+  stats.connections.open += 1;
+  stats.connections.total += 1;
 
   var addrInfo = conn.address();
   var id = lib.nextId();
@@ -82,6 +92,7 @@ function handleConnection(conn) {
     switch (cmd) {
 
       case 'STS':
+        stats.requests.STS += 1;
         if (tokens.length < 2) {
           logger.log(logger.DEBUG, function() {
             return `${lib.connId(conn)}: STS command received with no domain name`;
@@ -123,18 +134,28 @@ function handleConnection(conn) {
         break;
 
       case 'QUIT':
+        stats.requests.QUIT += 1;
         logger.log(logger.INFO, `${lib.connId(conn)}: QUIT received; closing connection`);
         conn.end('+BYE\r\n');
+        stats.connections.open -= 1;
         break;
 
       case 'VERSION':
+        stats.requests.VERSION += 1;
         logger.log(logger.DEBUG, function() {
           return `${lib.connId(conn)}: VERSION received; sending version number ${version}`;
         });
         lib.send(conn, `+${version}\r\n`);
         break;
 
+      case 'STATS':
+        stats.requests.STATS += 1;
+        stats.time.up = Math.floor(((new Date()) - stats.time.start) / 1000);
+        lib.send(conn, JSON.stringify(stats) + '\r\n');
+        break;
+
       default:
+        stats.requests.bad += 1;
         logger.log(logger.DEBUG, function() {
           // Only log the first 10 chars of the command
           return `${lib.connId(conn)}: Unrecognized command received; ${cmd.substr(0, 10)}`;
@@ -154,6 +175,7 @@ function handleConnection(conn) {
     logger.log(logger.WARNING, `${lib.connId(conn)}: Connection error; closing connection`);
     if (!conn.destroyed) {
       conn.end('+BYE\r\n');
+      stats.connections.open -= 1;
     }
   }
 }
